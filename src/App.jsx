@@ -180,8 +180,42 @@ ONLY the JSON array. No markdown, no backticks, no explanation.`;
   }
 }
 
-// ── Search all platforms for one keyword, paginated ──
-async function searchKeyword(keyword, apiKey, logFn, pagesPerPlatform = 4, expRange = null) {
+// ── Search all platforms for one keyword ──────────────────────────────────
+// Strategy: try real Playwright scraper (backend) first.
+// Falls back to OpenAI generation only if backend is offline or returns < 5 jobs.
+async function searchKeyword(keyword, apiKey, logFn, pagesPerPlatform = 4, expRange = null, backendOnline = false) {
+
+  // ── 1. Real scraping via backend ──────────────────────────────────────────
+  if (backendOnline) {
+    try {
+      logFn("  Mode: LIVE scraping (Playwright)", "info");
+      const resp = await fetch("http://localhost:3001/api/scrape", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          keyword,
+          pagesPerPlatform,
+          expMin: expRange?.[0] ?? null,
+          expMax: expRange?.[1] ?? null,
+        }),
+      });
+      if (resp.ok) {
+        const { jobs, count } = await resp.json();
+        if (count >= 5) {
+          logFn("  Scraped " + count + " real jobs", "ok");
+          return jobs;   // jobs already enriched by server
+        }
+        logFn("  Scraper returned " + count + " jobs — falling back to AI", "warn");
+      } else {
+        logFn("  Scrape endpoint error " + resp.status + " — falling back to AI", "warn");
+      }
+    } catch (e) {
+      logFn("  Scraper unreachable (" + e.message.slice(0, 40) + ") — falling back to AI", "warn");
+    }
+  }
+
+  // ── 2. AI generation fallback (OpenAI) ────────────────────────────────────
+  logFn("  Mode: AI generation (OpenAI)", "info");
   let allJobs = [];
   const usedCompanies = new Set();
 
@@ -198,7 +232,7 @@ async function searchKeyword(keyword, apiKey, logFn, pagesPerPlatform = 4, expRa
       if (page < pagesPerPlatform) await delay(300);
     }
 
-    logFn("  [" + platform.name + "] " + platformJobs.length + " jobs collected", "ok");
+    logFn("  [" + platform.name + "] " + platformJobs.length + " jobs", "ok");
     allJobs = [...allJobs, ...platformJobs];
   }
 
@@ -233,6 +267,7 @@ function parseJobResults(text, keyword, logFn) {
         match: calcMatch(j.title, j.company),
         tags: extractTags(j.title + " " + (j.company || "")),
         keyword: keyword,
+        sourceType: "ai",
       }));
       logFn("  Parsed " + results.length + " jobs", "ok");
       return results;
@@ -467,7 +502,7 @@ export default function App() {
 
     const expFilter = expRange[0] === 0 && expRange[1] === 15 ? null : expRange;
     log("Experience filter: " + (expFilter ? expRange[0] + "–" + expRange[1] + " yrs" : "any"), "info");
-    const jobs = await searchKeyword(kw, apiKey, log, 4, expFilter);
+    const jobs = await searchKeyword(kw, apiKey, log, 4, expFilter, backendOnline);
     const seen = new Set();
     const unique = jobs.filter(j => { const k = j.title+j.company; if (seen.has(k)) return false; seen.add(k); return true; });
     unique.sort((a,b) => b.match - a.match);
@@ -496,7 +531,7 @@ export default function App() {
       log("", "info");
       log("[" + (i+1) + "/" + batch.length + "] \"" + batch[i] + "\"", "scan");
       const expFilter = expRange[0] === 0 && expRange[1] === 15 ? null : expRange;
-      const jobs = await searchKeyword(batch[i], apiKey, log, 2, expFilter);
+      const jobs = await searchKeyword(batch[i], apiKey, log, 2, expFilter, backendOnline);
       all = [...all, ...jobs];
       // Show running total live
       setResults(prev => {
@@ -585,7 +620,7 @@ export default function App() {
           <div style={{ width:30, height:30, borderRadius:8, background:"linear-gradient(135deg, #6366f1, #a855f7)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:800, color:"#fff", fontFamily:"var(--mono)", boxShadow:"0 2px 8px #6366f140" }}>VJ</div>
           <div>
             <h1 style={{ fontSize:15, fontWeight:800, fontFamily:"var(--display)", color:"#e2e8f0" }}>VeriJob Agent</h1>
-            <p style={{ fontSize:9, color:"#1e293b", fontFamily:"var(--mono)" }}>{apiKey ? "AI Search Active" : "Platform Links Only"} | {PLATFORMS.length}P / {TARGET_COMPANIES.length}C / {DEFAULT_KEYWORDS.length}K</p>
+            <p style={{ fontSize:9, color:"#1e293b", fontFamily:"var(--mono)" }}>{backendOnline ? "● LIVE Scraping" : apiKey ? "AI Search" : "Platform Links Only"} | {PLATFORMS.length}P / {TARGET_COMPANIES.length}C / {DEFAULT_KEYWORDS.length}K</p>
           </div>
         </div>
         <div style={{ display:"flex", gap:2, background:"#060810", borderRadius:6, padding:2, border:"1px solid #0e1320" }}>
@@ -930,6 +965,10 @@ function JobRow({ job, idx, saved, toggleSave, showKeyword, applyStatus, onApply
         <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:2, flexWrap:"wrap" }}>
           <a href={job.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:11.5, fontWeight:700, color:"#e2e8f0" }}>{job.title}</a>
           <Badge score={job.match} />
+          {job.sourceType === "real"
+            ? <span style={{ fontSize:7.5, fontWeight:800, padding:"1.5px 5px", borderRadius:3, background:"#10b98120", color:"#10b981", border:"1px solid #10b98130", fontFamily:"var(--mono)", letterSpacing:0.5 }}>● LIVE</span>
+            : <span style={{ fontSize:7.5, fontWeight:700, padding:"1.5px 5px", borderRadius:3, background:"#6366f110", color:"#6366f1", border:"1px solid #6366f120", fontFamily:"var(--mono)" }}>AI</span>
+          }
           {showKeyword && job.keyword && <span style={{ fontSize:8, color:"#1e293b", fontFamily:"var(--mono)", background:"#060810", padding:"1px 4px", borderRadius:2 }}>{job.keyword}</span>}
           {status && <span style={{ fontSize:8, fontWeight:700, padding:"1px 5px", borderRadius:3, background:(STATUS_COLOR[status]||"#818cf8")+"15", color:STATUS_COLOR[status]||"#818cf8", fontFamily:"var(--mono)" }}>{status}</span>}
         </div>
