@@ -356,22 +356,85 @@ export default function App() {
   const applyJob = useCallback(async (job) => {
     const key = job.url || (job.title + job.company);
     setApplyStatus(prev => ({ ...prev, [key]: "pending" }));
+
+    if (!backendOnline) {
+      window.open(job.url, "_blank");
+      setApplyStatus(prev => ({ ...prev, [key]: "opened" }));
+      return;
+    }
+
     try {
+      // Queue the job on backend
       const resp = await fetch("http://localhost:3001/api/apply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ job, apiKey }),
       });
-      const result = await resp.json();
-      setApplyStatus(prev => ({ ...prev, [key]: result.status }));
-      // Refresh apply log
-      fetch("http://localhost:3001/api/applications")
-        .then(r => r.json()).then(setApplyLog).catch(() => {});
+      const { id, status: initStatus } = await resp.json();
+      if (initStatus === "already_applied") {
+        setApplyStatus(prev => ({ ...prev, [key]: "applied" }));
+        return;
+      }
+
+      // Poll for status every 2 s (SSE-compatible fallback)
+      const poll = async () => {
+        for (let i = 0; i < 90; i++) {          // up to ~3 min
+          await new Promise(r => setTimeout(r, 2000));
+          try {
+            const s = await fetch(`http://localhost:3001/api/job-status/${id}/poll`).then(r => r.json());
+            setApplyStatus(prev => ({ ...prev, [key]: s.status }));
+            if (["applied","partial","manual","error","opened","login_required"].includes(s.status)) {
+              fetch("http://localhost:3001/api/applications")
+                .then(r => r.json()).then(setApplyLog).catch(() => {});
+              return;
+            }
+          } catch { /* backend busy */ }
+        }
+      };
+      poll();
     } catch {
       window.open(job.url, "_blank");
       setApplyStatus(prev => ({ ...prev, [key]: "opened" }));
     }
-  }, [apiKey]);
+  }, [apiKey, backendOnline]);
+
+  // Apply to all visible results in sequence
+  const applyAll = useCallback(async () => {
+    if (!backendOnline) return;
+    const pending = results.filter(j => {
+      const k = j.url || (j.title + j.company);
+      const s = applyStatus[k];
+      return !s || s === "error";
+    });
+    if (!pending.length) return;
+    try {
+      const resp = await fetch("http://localhost:3001/api/apply-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobs: pending, apiKey }),
+      });
+      const { ids } = await resp.json();
+      pending.forEach((j, i) => {
+        const key = j.url || (j.title + j.company);
+        setApplyStatus(prev => ({ ...prev, [key]: "pending" }));
+        const id = ids[i];
+        const poll = async () => {
+          for (let t = 0; t < 120; t++) {
+            await new Promise(r => setTimeout(r, 2000));
+            try {
+              const s = await fetch(`http://localhost:3001/api/job-status/${id}/poll`).then(r => r.json());
+              setApplyStatus(prev => ({ ...prev, [key]: s.status }));
+              if (["applied","partial","manual","error","opened","login_required"].includes(s.status)) {
+                fetch("http://localhost:3001/api/applications").then(r => r.json()).then(setApplyLog).catch(() => {});
+                return;
+              }
+            } catch {}
+          }
+        };
+        poll();
+      });
+    } catch {}
+  }, [results, applyStatus, apiKey, backendOnline]);
 
   // Fetch apply log when switching to apply tab
   const fetchApplyLog = useCallback(() => {
@@ -669,6 +732,11 @@ export default function App() {
                 {searching && <span style={{ fontSize:8.5, color:"#818cf8", fontFamily:"var(--mono)", animation:"pulse 1s infinite" }}>live updating...</span>}
               </div>
               <div style={{ display:"flex", gap:4 }}>
+                {backendOnline && <button className="hov" onClick={applyAll} disabled={searching} style={{
+                  padding:"4px 10px", fontSize:9, fontWeight:700, borderRadius:4, border:"none",
+                  background:"linear-gradient(135deg,#6366f1,#a855f7)", color:"#fff",
+                  fontFamily:"var(--mono)", boxShadow:"0 2px 6px #6366f130", opacity:searching?0.5:1
+                }}>Auto Apply All</button>}
                 <button className="hov" onClick={()=>exportToCSV(results,"VeriJob_Search_"+new Date().toISOString().slice(0,10)+".csv")} style={{ padding:"4px 10px", fontSize:9, fontWeight:700, borderRadius:4, background:"#10b98110", color:"#10b981", border:"1px solid #10b98118", fontFamily:"var(--mono)" }}>Export CSV</button>
                 <button className="hov" onClick={()=>setResults([])} style={{ padding:"4px 10px", fontSize:9, fontWeight:700, borderRadius:4, background:"#dc262610", color:"#ef4444", border:"1px solid #dc262618", fontFamily:"var(--mono)" }}>Clear</button>
               </div>
