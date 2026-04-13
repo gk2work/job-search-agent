@@ -301,7 +301,21 @@ export default function App() {
   const [logs, setLogs] = useState([]);
   const [saved, setSaved] = useState(new Set());
   const [allResults, setAllResults] = useState([]);
+  const [applyStatus, setApplyStatus] = useState({});   // url -> status string
+  const [applyLog, setApplyLog]     = useState([]);      // fetched from backend
+  const [sessions, setSessions]     = useState(() => {
+    try { return JSON.parse(localStorage.getItem("vj_sessions") || "[]"); } catch { return []; }
+  });
+  const [backendOnline, setBackendOnline] = useState(false);
   const logRef = useRef(null);
+
+  // Check if backend is running
+  useEffect(() => {
+    fetch("http://localhost:3001/api/health")
+      .then(r => r.ok ? r.json() : null)
+      .then(d => setBackendOnline(!!d?.ok))
+      .catch(() => setBackendOnline(false));
+  }, []);
 
   const keywords = [...DEFAULT_KEYWORDS, ...extraKw];
   const active = [...selKw].map(i => keywords[i]).filter(Boolean);
@@ -320,6 +334,50 @@ export default function App() {
   }, []);
 
   const toggleSave = (idx) => setSaved(p => { const n = new Set(p); n.has(idx) ? n.delete(idx) : n.add(idx); return n; });
+
+  // Save session to localStorage after each search
+  const saveSession = useCallback((jobs, kwds) => {
+    if (!jobs.length) return;
+    const session = {
+      id: Date.now(),
+      timestamp: new Date().toISOString(),
+      keywords: kwds,
+      count: jobs.length,
+      jobs,
+    };
+    setSessions(prev => {
+      const updated = [session, ...prev].slice(0, 30);
+      localStorage.setItem("vj_sessions", JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  // Auto-apply via backend
+  const applyJob = useCallback(async (job) => {
+    const key = job.url || (job.title + job.company);
+    setApplyStatus(prev => ({ ...prev, [key]: "pending" }));
+    try {
+      const resp = await fetch("http://localhost:3001/api/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job, apiKey }),
+      });
+      const result = await resp.json();
+      setApplyStatus(prev => ({ ...prev, [key]: result.status }));
+      // Refresh apply log
+      fetch("http://localhost:3001/api/applications")
+        .then(r => r.json()).then(setApplyLog).catch(() => {});
+    } catch {
+      window.open(job.url, "_blank");
+      setApplyStatus(prev => ({ ...prev, [key]: "opened" }));
+    }
+  }, [apiKey]);
+
+  // Fetch apply log when switching to apply tab
+  const fetchApplyLog = useCallback(() => {
+    fetch("http://localhost:3001/api/applications")
+      .then(r => r.json()).then(setApplyLog).catch(() => {});
+  }, []);
 
   // Append new jobs to results, deduplicating against what's already there
   const appendResults = useCallback((newJobs) => {
@@ -353,13 +411,14 @@ export default function App() {
 
     if (unique.length > 0) {
       appendResults(unique);
-      log("Search complete: +" + unique.length + " results added", "ok");
+      saveSession(unique, [kw]);
+      log("Search complete: +" + unique.length + " results saved to session", "ok");
     } else {
       log("No results. Opening platform links instead...", "warn");
       PLATFORMS.forEach(p => window.open(p.buildUrl(kw), "_blank"));
     }
     setSearching(false);
-  }, [apiKey, apiKeySet, expRange, appendResults, log]);
+  }, [apiKey, apiKeySet, expRange, appendResults, log, saveSession]);
 
   // Search all keywords — 2 pages per platform to balance speed vs volume
   const searchAll = useCallback(async () => {
@@ -393,10 +452,11 @@ export default function App() {
       return [...prev, ...all.filter(j => !keys.has(j.title + j.company))];
     });
 
+    saveSession(all, batch);
     log("", "info");
-    log("Batch done: +" + all.length + " jobs added", "ok");
+    log("Batch done: +" + all.length + " jobs saved to session", "ok");
     setSearching(false);
-  }, [active, apiKey, apiKeySet, expRange, log]);
+  }, [active, apiKey, apiKeySet, expRange, log, saveSession]);
 
   useEffect(() => { if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [logs]);
 
@@ -470,8 +530,9 @@ export default function App() {
             { id:"search", label:"Search" },
             { id:"results", label:"Results" + (allResults.length ? " ("+allResults.length+")" : "") },
             { id:"companies", label:"Companies" },
+            { id:"apply", label:"Apply" + (applyLog.length ? " ("+applyLog.length+")" : "") },
           ].map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)} style={{
+            <button key={t.id} onClick={() => { setTab(t.id); if (t.id === "apply") fetchApplyLog(); }} style={{
               flex:1, padding:"5px", borderRadius:4, border:"none",
               background:tab===t.id ? "#111827" : "transparent",
               color:tab===t.id ? "#e2e8f0" : "#1e293b",
@@ -612,7 +673,7 @@ export default function App() {
                 <button className="hov" onClick={()=>setResults([])} style={{ padding:"4px 10px", fontSize:9, fontWeight:700, borderRadius:4, background:"#dc262610", color:"#ef4444", border:"1px solid #dc262618", fontFamily:"var(--mono)" }}>Clear</button>
               </div>
             </div>
-            {results.map((j,idx)=>(<JobRow key={idx} job={j} idx={idx} saved={saved} toggleSave={toggleSave} />))}
+            {results.map((j,idx)=>(<JobRow key={idx} job={j} idx={idx} saved={saved} toggleSave={toggleSave} applyStatus={applyStatus} onApply={applyJob} backendOnline={backendOnline} />))}
           </div>)}
         </div>)}
 
@@ -642,7 +703,7 @@ export default function App() {
                 }} style={{ padding:"6px 12px", fontSize:9.5, fontWeight:700, borderRadius:5, background:"#dc262610", color:"#ef4444", border:"1px solid #dc262618", fontFamily:"var(--mono)" }}>Export Saved</button>
               </div>
             </div>
-            {allResults.sort((a,b)=>b.match-a.match).map((j,idx)=>(<JobRow key={idx} job={j} idx={idx} saved={saved} toggleSave={toggleSave} showKeyword />))}
+            {allResults.sort((a,b)=>b.match-a.match).map((j,idx)=>(<JobRow key={idx} job={j} idx={idx} saved={saved} toggleSave={toggleSave} showKeyword applyStatus={applyStatus} onApply={applyJob} backendOnline={backendOnline} />))}
             <div style={{ textAlign:"center", marginTop:10 }}>
               <button onClick={()=>{setAllResults([]);setSaved(new Set());}} style={{ padding:"6px 16px", fontSize:9.5, fontWeight:600, borderRadius:5, background:"#090d1a", color:"#1e293b", border:"1px solid #0e1320", fontFamily:"var(--mono)" }}>Clear All</button>
             </div>
@@ -684,12 +745,114 @@ export default function App() {
             ))}
           </div>
         </div>)}
+
+        {/* ===== APPLY TAB ===== */}
+        {tab === "apply" && (<div>
+          {/* Backend status banner */}
+          <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:10, padding:"7px 10px", borderRadius:7,
+            background: backendOnline ? "#10b98110" : "#eab30810",
+            border: "1px solid " + (backendOnline ? "#10b98120" : "#eab30820") }}>
+            <div style={{ width:7, height:7, borderRadius:"50%", background: backendOnline ? "#10b981" : "#eab308" }} />
+            <span style={{ fontSize:9.5, fontFamily:"var(--mono)", color: backendOnline ? "#10b981" : "#eab308", fontWeight:600 }}>
+              {backendOnline ? "Apply Agent online — http://localhost:3001" : "Apply Agent offline — run: cd backend && npm start"}
+            </span>
+          </div>
+
+          {/* Stats */}
+          {applyLog.length > 0 && (
+            <div style={{ display:"flex", gap:5, marginBottom:10, flexWrap:"wrap" }}>
+              {[
+                { v: applyLog.length, l:"Total", c:"#6366f1" },
+                { v: applyLog.filter(a=>a.status==="applied").length, l:"Applied", c:"#10b981" },
+                { v: applyLog.filter(a=>a.status==="partial"||a.status==="opened").length, l:"In Progress", c:"#eab308" },
+                { v: applyLog.filter(a=>a.status==="error"||a.status==="login_required").length, l:"Failed", c:"#ef4444" },
+              ].map(s=>(
+                <div key={s.l} style={{ background:"#090d1a", border:"1px solid #111827", borderRadius:7, padding:"6px 12px", textAlign:"center" }}>
+                  <div style={{ fontSize:16, fontWeight:800, color:s.c, fontFamily:"var(--mono)" }}>{s.v}</div>
+                  <div style={{ fontSize:8, color:"#1e293b", fontWeight:600 }}>{s.l}</div>
+                </div>
+              ))}
+              <button onClick={()=>{ fetch("http://localhost:3001/api/applications",{method:"DELETE"}).then(fetchApplyLog); }} style={{
+                marginLeft:"auto", padding:"6px 12px", fontSize:9, fontWeight:700, borderRadius:5,
+                background:"#dc262610", color:"#ef4444", border:"1px solid #dc262618", fontFamily:"var(--mono)"
+              }}>Clear All</button>
+            </div>
+          )}
+
+          {/* Sessions history */}
+          {sessions.length > 0 && (
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:9, fontWeight:700, color:"#3a4660", fontFamily:"var(--mono)", marginBottom:6, letterSpacing:1 }}>SEARCH SESSIONS</div>
+              {sessions.map(s=>(
+                <div key={s.id} style={{ background:"#090d1a", border:"1px solid #111827", borderRadius:6, padding:"7px 10px", marginBottom:3 }}>
+                  <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:4 }}>
+                    <div>
+                      <span style={{ fontSize:10, fontWeight:700, color:"#818cf8", fontFamily:"var(--mono)" }}>{s.count} jobs</span>
+                      <span style={{ fontSize:8.5, color:"#2d3a54", fontFamily:"var(--mono)", marginLeft:8 }}>{new Date(s.timestamp).toLocaleString()}</span>
+                    </div>
+                    <div style={{ display:"flex", gap:3, flexWrap:"wrap" }}>
+                      {(s.keywords||[]).slice(0,3).map((kw,i)=>(
+                        <span key={i} style={{ fontSize:8, padding:"1px 5px", borderRadius:3, background:"#6366f110", color:"#818cf8", fontFamily:"var(--mono)" }}>{kw}</span>
+                      ))}
+                      {(s.keywords||[]).length > 3 && <span style={{ fontSize:8, color:"#2d3a54", fontFamily:"var(--mono)" }}>+{s.keywords.length-3} more</span>}
+                    </div>
+                    <button onClick={()=>exportToCSV(s.jobs,"VeriJob_Session_"+new Date(s.timestamp).toISOString().slice(0,10)+".csv")} style={{
+                      fontSize:8, fontWeight:700, padding:"2px 7px", borderRadius:3,
+                      background:"#10b98110", color:"#10b981", border:"1px solid #10b98118", fontFamily:"var(--mono)"
+                    }}>Export CSV</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Application log */}
+          <div style={{ fontSize:9, fontWeight:700, color:"#3a4660", fontFamily:"var(--mono)", marginBottom:6, letterSpacing:1 }}>APPLICATION LOG</div>
+          {applyLog.length === 0 ? (
+            <div style={{ textAlign:"center", padding:"32px 16px", color:"#1e293b", fontSize:11, fontFamily:"var(--mono)" }}>
+              No applications yet.<br/>
+              <span style={{ fontSize:9.5, color:"#1e293b" }}>Start backend, then click "Auto Apply" on any job card.</span>
+            </div>
+          ) : applyLog.map(a => {
+            const statusColor = a.status==="applied"?"#10b981":a.status==="partial"||a.status==="opened"?"#eab308":"#ef4444";
+            return (
+              <div key={a.id} style={{ background:"#090d1a", border:"1px solid #111827", borderLeft:"3px solid "+statusColor, borderRadius:6, padding:"8px 10px", marginBottom:3 }}>
+                <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:6 }}>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:2, flexWrap:"wrap" }}>
+                      <a href={a.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:11, fontWeight:700, color:"#e2e8f0" }}>{a.title}</a>
+                      <span style={{ fontSize:8, fontWeight:700, padding:"1px 5px", borderRadius:3, background:statusColor+"15", color:statusColor, fontFamily:"var(--mono)" }}>{a.status}</span>
+                    </div>
+                    <div style={{ fontSize:9, color:"#2d3a54", fontFamily:"var(--mono)", marginBottom:2 }}>
+                      {a.company} · {a.source} · {new Date(a.appliedAt).toLocaleString()}
+                    </div>
+                    {a.salary && <span style={{ fontSize:8.5, fontWeight:700, padding:"1px 5px", borderRadius:3, background:"#10b98115", color:"#10b981", fontFamily:"var(--mono)" }}>{a.salary}</span>}
+                    {a.message && <div style={{ fontSize:8.5, color:"#3a4660", fontFamily:"var(--mono)", marginTop:3 }}>{a.message}</div>}
+                    {a.coverLetter && (
+                      <details style={{ marginTop:4 }}>
+                        <summary style={{ fontSize:8.5, color:"#818cf8", fontFamily:"var(--mono)", cursor:"pointer" }}>Cover Letter</summary>
+                        <div style={{ fontSize:8.5, color:"#4b5c78", fontFamily:"var(--sans)", marginTop:4, lineHeight:1.5, whiteSpace:"pre-wrap" }}>{a.coverLetter}</div>
+                      </details>
+                    )}
+                  </div>
+                  <button onClick={()=>{ fetch("http://localhost:3001/api/applications/"+a.id,{method:"DELETE"}).then(fetchApplyLog); }} style={{
+                    background:"none", border:"none", color:"#1e293b", fontSize:12, cursor:"pointer", flexShrink:0
+                  }}>✕</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>)}
       </div>
     </div>
   );
 }
 
-function JobRow({ job, idx, saved, toggleSave, showKeyword }) {
+const STATUS_COLOR = { applied:"#10b981", pending:"#eab308", partial:"#eab308", opened:"#818cf8", error:"#ef4444", login_required:"#ef4444" };
+
+function JobRow({ job, idx, saved, toggleSave, showKeyword, applyStatus, onApply, backendOnline }) {
+  const key = job.url || (job.title + job.company);
+  const status = applyStatus?.[key];
   return (
     <div className="row" style={{
       background:"#090d1a", border:"1px solid #111827", borderRadius:6,
@@ -700,6 +863,7 @@ function JobRow({ job, idx, saved, toggleSave, showKeyword }) {
           <a href={job.url} target="_blank" rel="noopener noreferrer" style={{ fontSize:11.5, fontWeight:700, color:"#e2e8f0" }}>{job.title}</a>
           <Badge score={job.match} />
           {showKeyword && job.keyword && <span style={{ fontSize:8, color:"#1e293b", fontFamily:"var(--mono)", background:"#060810", padding:"1px 4px", borderRadius:2 }}>{job.keyword}</span>}
+          {status && <span style={{ fontSize:8, fontWeight:700, padding:"1px 5px", borderRadius:3, background:(STATUS_COLOR[status]||"#818cf8")+"15", color:STATUS_COLOR[status]||"#818cf8", fontFamily:"var(--mono)" }}>{status}</span>}
         </div>
         <div style={{ fontSize:9.5, color:"#2d3a54", marginBottom:3, display:"flex", gap:5, flexWrap:"wrap" }}>
           <span style={{ fontWeight:600, color:"#4b5c78" }}>{job.company}</span>
@@ -718,10 +882,19 @@ function JobRow({ job, idx, saved, toggleSave, showKeyword }) {
         </div>
       </div>
       <div style={{ display:"flex", gap:3, flexShrink:0 }}>
+        {onApply && (
+          <button className="hov" onClick={()=>onApply(job)} disabled={status==="pending"||status==="applied"} style={{
+            padding:"3px 8px", fontSize:9, fontWeight:700, borderRadius:4, border:"none",
+            background: status==="applied" ? "#10b98120" : status==="pending" ? "#eab30820" : backendOnline ? "linear-gradient(135deg,#6366f1,#a855f7)" : "#1e293b",
+            color: status==="applied" ? "#10b981" : status==="pending" ? "#eab308" : "#fff",
+            fontFamily:"var(--mono)", cursor: status==="applied"||status==="pending" ? "default" : "pointer",
+            boxShadow: backendOnline && !status ? "0 2px 6px #6366f130" : "none"
+          }}>{status==="applied"?"Applied":status==="pending"?"Applying...":"Auto Apply"}</button>
+        )}
         <a href={job.url} target="_blank" rel="noopener noreferrer" style={{
           padding:"3px 8px", fontSize:9, fontWeight:700, borderRadius:4,
           background:"#6366f10f", color:"#818cf8", border:"1px solid #6366f118", fontFamily:"var(--mono)"
-        }}>Apply</a>
+        }}>View</a>
         <button onClick={()=>toggleSave(idx)} style={{
           background:saved.has(idx)?"#dc26260d":"#060810",
           border:"1px solid "+(saved.has(idx)?"#dc262618":"#0e1320"),
