@@ -1,5 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
+// Backend URL — set VITE_API_URL in .env to point at any host (Cloudflare Tunnel, Oracle VM, etc.)
+// Falls back to localhost:3001 for local dev
+const API = (import.meta.env.VITE_API_URL || "http://localhost:3001").replace(/\/$/, "");
+
 const PROFILE = {
   name: "Gautam Kumar",
   title: "Verification Engineer",
@@ -189,7 +193,7 @@ async function searchKeyword(keyword, apiKey, logFn, pagesPerPlatform = 4, expRa
   if (backendOnline) {
     try {
       logFn("  Mode: LIVE scraping (Playwright)", "info");
-      const resp = await fetch("http://localhost:3001/api/scrape", {
+      const resp = await fetch(`${API}/api/scrape`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -452,14 +456,14 @@ export default function App() {
   // Check if backend is running + load session/screenshot state
   useEffect(() => {
     const check = () => {
-      fetch("http://localhost:3001/api/health")
+      fetch(`${API}/api/health`)
         .then(r => r.ok ? r.json() : null)
         .then(d => {
           setBackendOnline(!!d?.ok);
           if (d?.ok) {
             // Load session status when backend comes online
-            fetch("http://localhost:3001/api/session-status").then(r => r.json()).then(setSessionStatus).catch(() => {});
-            fetch("http://localhost:3001/api/screenshots").then(r => r.json()).then(setScreenshots).catch(() => {});
+            fetch(`${API}/api/session-status`).then(r => r.json()).then(setSessionStatus).catch(() => {});
+            fetch(`${API}/api/screenshots`).then(r => r.json()).then(setScreenshots).catch(() => {});
           }
         })
         .catch(() => setBackendOnline(false));
@@ -533,7 +537,7 @@ export default function App() {
       // Optionally preview cover letter before sending
       let prebuiltCL = null;
       if (!skipPreview && apiKey) {
-        const clResp = await fetch("http://localhost:3001/api/cover-letter", {
+        const clResp = await fetch(`${API}/api/cover-letter`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ job, apiKey }),
         }).then(r => r.json()).catch(() => null);
@@ -551,7 +555,7 @@ export default function App() {
       const overrideCV = Object.keys(profileEdit).length ? profileEdit : null;
 
       // Queue the job on backend
-      const resp = await fetch("http://localhost:3001/api/apply", {
+      const resp = await fetch(`${API}/api/apply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ job, apiKey, overrideCV, coverLetter: prebuiltCL }),
@@ -567,11 +571,11 @@ export default function App() {
         for (let i = 0; i < 90; i++) {
           await new Promise(r => setTimeout(r, 2000));
           try {
-            const s = await fetch(`http://localhost:3001/api/job-status/${id}/poll`).then(r => r.json());
+            const s = await fetch(`${API}/api/job-status/${id}/poll`).then(r => r.json());
             setApplyStatus(prev => ({ ...prev, [key]: s.status }));
             if (["applied","partial","manual","error","opened","login_required"].includes(s.status)) {
-              fetch("http://localhost:3001/api/applications").then(r => r.json()).then(setApplyLog).catch(() => {});
-              fetch("http://localhost:3001/api/screenshots").then(r => r.json()).then(setScreenshots).catch(() => {});
+              fetch(`${API}/api/applications`).then(r => r.json()).then(setApplyLog).catch(() => {});
+              fetch(`${API}/api/screenshots`).then(r => r.json()).then(setScreenshots).catch(() => {});
               return;
             }
           } catch {}
@@ -596,7 +600,7 @@ export default function App() {
     if (!window.confirm(`Auto-apply to ${pending.length} jobs (match ≥ ${applyMinMatch}%)?`)) return;
     const overrideCV = Object.keys(profileEdit).length ? profileEdit : null;
     try {
-      const resp = await fetch("http://localhost:3001/api/apply-all", {
+      const resp = await fetch(`${API}/api/apply-all`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jobs: pending, apiKey, overrideCV, minMatch: applyMinMatch }),
@@ -610,10 +614,10 @@ export default function App() {
           for (let t = 0; t < 120; t++) {
             await new Promise(r => setTimeout(r, 2000));
             try {
-              const s = await fetch(`http://localhost:3001/api/job-status/${id}/poll`).then(r => r.json());
+              const s = await fetch(`${API}/api/job-status/${id}/poll`).then(r => r.json());
               setApplyStatus(prev => ({ ...prev, [key]: s.status }));
               if (["applied","partial","manual","error","opened","login_required"].includes(s.status)) {
-                fetch("http://localhost:3001/api/applications").then(r => r.json()).then(setApplyLog).catch(() => {});
+                fetch(`${API}/api/applications`).then(r => r.json()).then(setApplyLog).catch(() => {});
                 return;
               }
             } catch {}
@@ -626,7 +630,7 @@ export default function App() {
 
   // Fetch apply log when switching to apply tab
   const fetchApplyLog = useCallback(() => {
-    fetch("http://localhost:3001/api/applications")
+    fetch(`${API}/api/applications`)
       .then(r => r.json()).then(setApplyLog).catch(() => {});
   }, []);
 
@@ -1094,7 +1098,7 @@ export default function App() {
             border: "1px solid " + (backendOnline ? "#10b98120" : "#eab30820") }}>
             <div style={{ width:7, height:7, borderRadius:"50%", background: backendOnline ? "#10b981" : "#eab308" }} />
             <span style={{ fontSize:9.5, fontFamily:"var(--mono)", color: backendOnline ? "#10b981" : "#eab308", fontWeight:600 }}>
-              {backendOnline ? "Apply Agent online — http://localhost:3001" : "Apply Agent offline — run: cd backend && npm start"}
+              {backendOnline ? `Apply Agent online — ${API}` : "Apply Agent offline — run: cd backend && npm start"}
             </span>
           </div>
 
@@ -1113,8 +1117,8 @@ export default function App() {
                       <span style={{ fontSize:9, fontWeight:700, color: logged?"#10b981":"#ef4444", fontFamily:"var(--mono)", textTransform:"capitalize" }}>{p}</span>
                       {logged && <span style={{ fontSize:7.5, color:"#3a4660", fontFamily:"var(--mono)" }}>saved</span>}
                       {logged && (
-                        <button onClick={() => fetch(`http://localhost:3001/api/session/${p}`, {method:"DELETE"})
-                          .then(() => fetch("http://localhost:3001/api/session-status").then(r=>r.json()).then(setSessionStatus))
+                        <button onClick={() => fetch(`${API}/api/session/${p}`, {method:"DELETE"})
+                          .then(() => fetch(`${API}/api/session-status`).then(r=>r.json()).then(setSessionStatus))
                         } style={{ background:"none", border:"none", color:"#3a4660", fontSize:9, cursor:"pointer", padding:0 }}>✕</button>
                       )}
                     </div>
@@ -1129,14 +1133,14 @@ export default function App() {
             <div style={{ background:"#090d1a", border:"1px solid #111827", borderRadius:7, padding:"8px 10px", marginBottom:10 }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
                 <div style={{ fontSize:9, fontWeight:700, color:"#3a4660", fontFamily:"var(--mono)", letterSpacing:1 }}>DEBUG SCREENSHOTS ({screenshots.length})</div>
-                <button onClick={() => fetch("http://localhost:3001/api/screenshots").then(r=>r.json()).then(setScreenshots)}
+                <button onClick={() => fetch(`${API}/api/screenshots`).then(r=>r.json()).then(setScreenshots)}
                   style={{ fontSize:8, fontWeight:700, padding:"2px 6px", borderRadius:3, background:"#6366f110", color:"#818cf8", border:"none", cursor:"pointer", fontFamily:"var(--mono)" }}>Refresh</button>
               </div>
               <div style={{ display:"flex", gap:6, overflowX:"auto", paddingBottom:4 }}>
                 {screenshots.slice(0,12).map(name => (
-                  <a key={name} href={`http://localhost:3001/api/screenshots/${name}`} target="_blank" rel="noopener noreferrer"
+                  <a key={name} href={`${API}/api/screenshots/${name}`} target="_blank" rel="noopener noreferrer"
                     style={{ flexShrink:0 }}>
-                    <img src={`http://localhost:3001/api/screenshots/${name}`} alt={name}
+                    <img src={`${API}/api/screenshots/${name}`} alt={name}
                       style={{ height:64, width:"auto", borderRadius:4, border:"1px solid #1e293b", objectFit:"cover" }} />
                     <div style={{ fontSize:7, color:"#3a4660", fontFamily:"var(--mono)", marginTop:2, maxWidth:90, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{name.replace(/_\d+\.png$/,"")}</div>
                   </a>
@@ -1159,7 +1163,7 @@ export default function App() {
                   <div style={{ fontSize:8, color:"#1e293b", fontWeight:600 }}>{s.l}</div>
                 </div>
               ))}
-              <button onClick={()=>{ fetch("http://localhost:3001/api/applications",{method:"DELETE"}).then(fetchApplyLog); }} style={{
+              <button onClick={()=>{ fetch(`${API}/api/applications`,{method:"DELETE"}).then(fetchApplyLog); }} style={{
                 marginLeft:"auto", padding:"6px 12px", fontSize:9, fontWeight:700, borderRadius:5,
                 background:"#dc262610", color:"#ef4444", border:"1px solid #dc262618", fontFamily:"var(--mono)"
               }}>Clear All</button>
@@ -1222,7 +1226,7 @@ export default function App() {
                       </details>
                     )}
                   </div>
-                  <button onClick={()=>{ fetch("http://localhost:3001/api/applications/"+a.id,{method:"DELETE"}).then(fetchApplyLog); }} style={{
+                  <button onClick={()=>{ fetch(`${API}/api/applications/`+a.id,{method:"DELETE"}).then(fetchApplyLog); }} style={{
                     background:"none", border:"none", color:"#1e293b", fontSize:12, cursor:"pointer", flexShrink:0
                   }}>✕</button>
                 </div>
@@ -1261,7 +1265,7 @@ export default function App() {
                 padding:"6px 14px", fontSize:9.5, fontWeight:700, borderRadius:6,
                 background:"#dc262610", color:"#ef4444", border:"1px solid #dc262618", fontFamily:"var(--mono)"
               }}>Reset to Defaults</button>
-              {backendOnline && <button onClick={() => fetch("http://localhost:3001/api/profile", {
+              {backendOnline && <button onClick={() => fetch(`${API}/api/profile`, {
                 method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(profileEdit)
               }).then(() => alert("Profile synced to backend"))} style={{
                 padding:"6px 14px", fontSize:9.5, fontWeight:700, borderRadius:6,

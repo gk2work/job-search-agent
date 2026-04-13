@@ -22,8 +22,10 @@ const Database = require("better-sqlite3");
 const { scrapeAll } = require("./scraper");
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+// Allow requests from any origin — needed when frontend is on Vercel and
+// backend is exposed via Cloudflare Tunnel or any other public URL
+app.use(cors({ origin: "*" }));
+app.use(express.json({ limit: "10mb" })); // larger limit for base64 CV uploads
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 const ROOT         = __dirname;

@@ -17,10 +17,11 @@ app/dist/
 dist
 dist-ssr
 
-# Env & secrets
+# Env & secrets (keep .env.example, ignore actual .env)
 .env
 *.env
 *.local
+!.env.example
 
 # Editor
 .vscode/*
